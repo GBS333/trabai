@@ -1,0 +1,138 @@
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>SQL Server — O que acontece por trás dos dados?</title>
+<style>
+:root{--pg:#e9f1fa;--fg:#0a1c33;--bt:#0a1c33;--bf:#e8f6ff;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--pg:#030a14;--fg:#cfe9ff;--bt:#0f2a4a;--bf:#e8f6ff}}
+:root[data-theme="dark"]{--pg:#030a14;--fg:#cfe9ff;--bt:#0f2a4a;--bf:#e8f6ff}
+html,body{margin:0;background:var(--pg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+.w{max-width:1280px;margin:0 auto;padding:12px}
+.st{position:relative;aspect-ratio:16/9;background:#020b1a;border-radius:10px;overflow:hidden}
+canvas{width:100%;height:100%;display:block}
+#ov{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(2,11,26,.6);cursor:pointer;color:#e8f6ff;font-size:clamp(16px,3vw,32px);text-align:center}
+.ct{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
+button{background:var(--bt);color:var(--bf);border:1px solid #38e1ff55;border-radius:8px;padding:8px 12px;font:inherit;cursor:pointer}
+button.on{border-color:#ff8a1f}
+input[type=range]{flex:1;min-width:160px}
+.ch{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.ch button{font-size:13px;padding:5px 9px}
+small{opacity:.75}
+</style></head><body><div class="w">
+<div class="st"><canvas id="c" width="1920" height="1080"></canvas><div id="ov">▶ Toque para iniciar<br><small>(ative o som para narração e trilha)</small></div></div>
+<div class="ct"><button id="pp">⏯</button><input id="sk" type="range" min="0" max="146" step="0.1" value="0"><span id="tc">0:00</span><button id="sd" class="on">🔊 Som</button><button id="vz" class="on">🎙 Narração</button><button id="fs">⛶</button></div>
+<div class="ch" id="ch"></div>
+<p><small>Valores numéricos de desempenho e o plano de execução são ilustrativos (simulação); os números reais virão dos testes no SSMS.</small></p>
+</div>
+<script>
+const c=document.getElementById('c'),g=c.getContext('2d'),W=1920,H=1080;
+const K={b:'#1e6bff',c:'#38e1ff',w:'#e8f6ff',o:'#ff8a1f',r:'#ff3b4e',g:'#3be08a'};
+const cl=(v,a=0,b=1)=>Math.max(a,Math.min(b,v)),sm=(a,b,t)=>{t=cl((t-a)/(b-a));return t*t*(3-2*t)},lp=(a,b,t)=>a+(b-a)*t;
+let cam={y:0,p:.2,d:1000,x:0,yy:0};
+function P(x,y,z){const cy=Math.cos(cam.y),sy=Math.sin(cam.y);x-=cam.x;y-=cam.yy;const X=x*cy-z*sy;let Z=x*sy+z*cy;const cp=Math.cos(cam.p),sp=Math.sin(cam.p),Y=y*cp-Z*sp;Z=y*sp+Z*cp+cam.d;const f=1500/Math.max(Z,60);return[W/2+X*f,H/2-Y*f,f]}
+function R(x,y,z,w,h,col,a=1,st){const q=[[-1,-1],[1,-1],[1,1],[-1,1]].map(([i,j])=>P(x+i*w/2,y+j*h/2,z));g.beginPath();q.forEach((p,i)=>i?g.lineTo(p[0],p[1]):g.moveTo(p[0],p[1]));g.closePath();if(col){g.globalAlpha=a;g.fillStyle=col;g.fill()}if(st){g.globalAlpha=Math.min(1,a+.4);g.strokeStyle=st;g.lineWidth=2;g.stroke()}g.globalAlpha=1}
+function L(a,b,col,w=2,al=1,gl=0){const p=P(...a),q=P(...b);g.globalAlpha=al;g.strokeStyle=col;g.lineWidth=w;g.shadowColor=col;g.shadowBlur=gl;g.beginPath();g.moveTo(p[0],p[1]);g.lineTo(q[0],q[1]);g.stroke();g.shadowBlur=0;g.globalAlpha=1}
+function B(x,y,z,w,h,d,col,a,st){R(x,y,z-d/2,w,h,col,a*.6,st);for(const i of[-1,1])for(const j of[-1,1])L([x+i*w/2,y+j*h/2,z-d/2],[x+i*w/2,y+j*h/2,z+d/2],st||col,1.5,a);R(x,y,z+d/2,w,h,col,a,st)}
+function D(x,y,z,r,col,al=1){const p=P(x,y,z);g.globalAlpha=al;g.fillStyle=col;g.shadowColor=col;g.shadowBlur=30;g.beginPath();g.arc(p[0],p[1],r*p[2],0,7);g.fill();g.shadowBlur=0;g.globalAlpha=1}
+function T(s,x,y,sz,col=K.w,al=1,al2='center',fnt='system-ui'){g.globalAlpha=al;g.fillStyle=col;g.font=`600 ${sz}px ${fnt}`;g.textAlign=al2;g.fillText(s,x,y);g.globalAlpha=1}
+function T3(s,x,y,z,sz,col,al){const p=P(x,y,z);T(s,p[0],p[1],sz*p[2],col,al)}
+const KW=/^(CREATE|VIEW|AS|SELECT|FROM|WHERE|SET|ON|BEGIN|TRANSACTION|UPDATE|COMMIT|ROLLBACK|NONCLUSTERED|INDEX|INCLUDE|ON|STATISTICS|IO|TIME)$/i;
+function code(ls,x,y,w,al,hl=[]){const lh=42,h=ls.length*lh+36;g.globalAlpha=al;g.fillStyle='rgba(4,18,38,.94)';g.beginPath();g.roundRect(x,y,w,h,14);g.fill();g.strokeStyle=K.c;g.lineWidth=2;g.stroke();g.font='500 28px Consolas,monospace';g.textAlign='left';
+ls.forEach((l,i)=>{if(hl.includes(i)){g.fillStyle='rgba(255,138,31,.25)';g.fillRect(x+6,y+14+i*lh,w-12,lh-2)}let cx=x+24;l.split(/(\W+)/).forEach(t=>{g.fillStyle=KW.test(t)?K.c:/^\d+$/.test(t)?K.o:K.w;g.fillText(t,cx,y+18+i*lh+28);cx+=g.measureText(t).width})});g.globalAlpha=1}
+function panel(x,y,w,h,col,al=1){g.globalAlpha=al;g.fillStyle='rgba(4,18,38,.85)';g.beginPath();g.roundRect(x,y,w,h,14);g.fill();g.strokeStyle=col;g.lineWidth=2;g.stroke();g.globalAlpha=1}
+function G(ox,oy,oz,cn,rn,cw,ch,fn){for(let i=0;i<cn;i++)for(let j=0;j<rn;j++){const r=fn(i,j);R(ox+(i-cn/2)*cw,oy-(j-rn/2)*ch,oz,cw*.88,ch*.78,r[0],r[1],r[2])}}
+// árvore: u 0..1 percorre raiz→intermediária→folha
+function tree(ox,oy,oz,s,u,lit=K.o){const N=[[0,0]],M=[-1,0,1].map(i=>[i*260*s,-170*s]),Lf=[...Array(9)].map((_,k)=>[(k-4)*90*s,-340*s]);
+M.forEach((m,i)=>{L([ox,oy,oz],[ox+m[0],oy+m[1],oz],K.c,2,.6);for(let k=0;k<3;k++){const l=Lf[i*3+k];L([ox+m[0],oy+m[1],oz],[ox+l[0],oy+l[1],oz],K.c,1.5,.5)}});
+B(ox,oy,oz,150*s,60*s,40,K.b,.5,u>0?lit:K.c);M.forEach((m,i)=>B(ox+m[0],oy+m[1],oz,150*s,55*s,40,K.b,.5,i==1&&u>.35?lit:K.c));Lf.forEach((l,k)=>B(ox+l[0],oy+l[1],oz,70*s,50*s,40,'#0b3a7a',.6,k==5&&u>.7?lit:K.c));
+const pts=[[0,0],M[1],Lf[5]],q=u*2,i=Math.min(1,Math.floor(q)),f=q-i;if(u>0&&u<=1)D(ox+lp(pts[i][0],pts[i+1][0],f),oy+lp(pts[i][1],pts[i+1][1],f),oz+40,14,K.o);return Lf[5]}
+function arrow(a,b,col,al=1,w=5){const p=P(...a),q=P(...b);g.globalAlpha=al;g.strokeStyle=col;g.fillStyle=col;g.lineWidth=w;g.beginPath();g.moveTo(p[0],p[1]);g.lineTo(q[0],q[1]);g.stroke();const an=Math.atan2(q[1]-p[1],q[0]-p[0]);g.beginPath();g.moveTo(q[0],q[1]);g.lineTo(q[0]-24*Math.cos(an-.4),q[1]-24*Math.sin(an-.4));g.lineTo(q[0]-24*Math.cos(an+.4),q[1]-24*Math.sin(an+.4));g.fill();g.globalAlpha=1}
+// ---------- CENAS ----------
+function s0(t){cam={y:lp(.9,.25,sm(0,10,t)),p:.18,d:lp(2800,1250,sm(0,9,t)),x:0,yy:-60};
+for(let i=0;i<6;i++){B(0,-220+i*75,0,320,55,220,K.b,.35,K.c);D(130,-220+i*75,115,5,(Math.floor(t*5+i*3)%3)?K.c:K.o,.9)}
+const a=sm(3,6,t);if(a>0)G(0,60,-500,14,7,150,110,(i,j)=>[K.b,.12*a+(Math.sin(t*2+i+j)>.8?.35*a:0),'#38e1ff44']);
+const u=sm(4,9.3,t);if(u>0){const pts=[[-900,-300,100],[-500,150,-300],[-100,-100,-500],[300,250,-500],[800,0,-300]];const n=u*4,i=Math.min(3,Math.floor(n)),f=n-i;for(let k=0;k<=i;k++){const b=k==i?[lp(pts[k][0],pts[k+1][0],f),lp(pts[k][1],pts[k+1][1],f),lp(pts[k][2],pts[k+1][2],f)]:pts[k+1];L(pts[k],b,K.o,4,1,25);if(k==i)D(...b,12,K.o)}}
+const q=sm(7,8.5,t);T('SQL SERVER',W/2,H/2-10,150*(1+.04*(1-q)),K.w,q);T('Views, Índices e Processamento de Transações',W/2,H/2+70,46,K.c,sm(8,9.5,t))}
+function s1(t){cam={y:lp(.55,.15,sm(0,12,t)),p:.15,d:lp(1500,1000,sm(0,10,t)),x:lp(0,-250,sm(7,12,t)),yy:0};
+T3('Clientes (tabela)',0,420,0,30,K.w,.8);const a=sm(4,6,t);
+G(0,0,0,12,9,130,90,(i,j)=>i<3&&j%2==0?[K.c,.25+.5*a,K.c]:[K.b,.35-.25*a,'#1e6bff55']);
+if(a>0){R(-390,0,-90,3*130+10,9*90+20,K.c,.07*a,K.c);T3('vw_ClientesAtivos',-390,470,-90,34,K.c,a)}
+code(['CREATE VIEW vw_ClientesAtivos AS','SELECT id_cliente, nome, cidade','FROM Clientes','WHERE ativo = 1;'],1010,120,860,sm(6,7,t)*(1-sm(11.3,12,t)));
+const u=sm(11.5,13,t);if(u>0)for(let i=0;i<3;i++){const x=300+i*340;panel(x,720,280,230,K.c,u);g.globalAlpha=u;g.fillStyle=K.c;g.beginPath();g.arc(x+140,770,20,0,7);g.fill();for(let k=0;k<3;k++){g.fillStyle=k?K.w:K.o;g.fillRect(x+30,815+k*34,220-k*20,14)}T('Usuário '+'ABC'[i],x+140,980,28,K.w,u)}
+if(u>0)T('Todos consultam a mesma view — interface mais simples',W/2,1040,34,K.o,u)}
+function s2(t){const n=Math.floor(sm(0,8.5,t)*47);cam={y:lp(.4,0,sm(0,14,t)),p:.15,d:lp(1300,1150,sm(0,8,t)),x:0,yy:lp(0,-130,sm(8,10,t))};
+if(t<9){G(0,0,0,12,6,120,100,(i,j)=>{const k=j*12+i;return k==47&&n>=47?[K.g,.9,K.g]:k<=n?[K.o,.45,K.o]:[K.b,.2,'#38e1ff44']});T('Registros lidos: '+n+' / buscando 1 cliente',W/2,950,44,K.o,1-sm(8,9,t));T('Sem índice: muitas leituras',W/2,110,40,K.w,1-sm(8,9,t))}
+const a=sm(9,10,t)*(1-sm(14,14.6,t));if(a>0){const u=sm(10.3,14,t);tree(0,380,0,1.3,u);T('Raiz',W/2-330,375+.3*0,32,K.c,a);T('Páginas intermediárias',W/2-420,550,30,K.c,a);T('Páginas folha',W/2-640,760,30,K.c,a);if(u>.95)T('Chave encontrada em poucos níveis',W/2,980,40,K.g,1)}
+const b=sm(14.5,15.5,t);if(b>0){panel(110,170,820,430,K.c,b);T('CLUSTERED',520,235,40,K.c,b);for(let i=0;i<6;i++){g.globalAlpha=b;g.fillStyle=K.b;g.fillRect(150+i*125,290,110,90);T(String(i*10+1),205+i*125,345,28,K.w,b)}T('Folhas = as próprias linhas, ordenadas pela chave',520,470,28,K.w,b);T('Só um por tabela',520,520,28,K.o,b);
+panel(990,170,820,430,K.o,b);T('NONCLUSTERED',1400,235,40,K.o,b);for(let i=0;i<6;i++){g.globalAlpha=b;g.fillStyle='#0b3a7a';g.fillRect(1030+i*125,290,110,50);g.fillStyle=K.o;g.fillRect(1030+i*125,350,110,30);}T('Folhas = chave + ponteiro para a linha',1400,470,28,K.w,b);T('Estrutura separada da tabela',1400,520,28,K.o,b)}
+const d=sm(17,18,t);if(d>0){panel(300,700,1320,240,K.o,d);T('Índices têm custo',W/2,770,44,K.o,d);T('Mais espaço em disco e mais manutenção em INSERT, UPDATE e DELETE.',W/2,835,32,K.w,d);T('Escolha-os de acordo com as consultas — nem todo índice acelera.',W/2,890,32,K.w,d)}}
+function s3(t){const u=sm(1,6,t),pl=sm(10,11,t);if(pl<1){g.save();g.beginPath();g.rect(0,0,W/2,H);g.clip();g.translate(-W/4,0);cam={y:.25*Math.sin(t*.3),p:.12,d:1500,x:0,yy:-150};tree(0,300,0,.9,u);g.restore();
+g.save();g.beginPath();g.rect(W/2,0,W/2,H);g.clip();g.translate(W/4,0);cam={y:-.2,p:.2,d:1350,x:0,yy:0};const sw=sm(1,9,t);G(0,0,0,6,8,150,90,(i,j)=>(j*6+i)/48<sw?[K.o,.5,K.o]:[K.b,.25,'#38e1ff44']);const bx=lp(-450,450,sw);g.restore();
+g.globalAlpha=1-pl;g.strokeStyle=K.c;g.beginPath();g.moveTo(W/2,60);g.lineTo(W/2,H-60);g.stroke();g.globalAlpha=1;
+T('INDEX SEEK',W/4,130,56,K.c,1-pl);T('caminho direcionado por chaves',W/4,190,30,K.w,1-pl);T('INDEX SCAN',W*3/4,130,56,K.o,1-pl);T('percorre parte ampla ou todas as entradas',W*3/4,190,30,K.w,1-pl);T('Nenhum é bom ou ruim por si só — depende dos dados e da consulta',W/2,1030,34,K.w,sm(7,8.5,t)*(1-pl))}
+if(pl>0){panel(260,180,1400,640,K.c,pl);T('Plano de execução — referência visual',W/2,250,42,K.c,pl);['SELECT','Nested Loops (Inner Join)','Index Seek (NonClustered)'].forEach((s,i)=>{const x=1400-i*470;panel(x-150,380+(i%2)*60,300,110,i==2?K.o:K.c,pl);T(s,x,445+(i%2)*60,26,K.w,pl);if(i)arrow([0,0,0],[0,0,0],K.c,0)});T('Ilustrativo — não é resultado de uma execução real',W/2,780,30,K.o,pl)}}
+function s4(t){cam={y:.3,p:.15,d:1500,x:-80,yy:-100};const a=sm(0,2,t),k=sm(5,8,t),cv=sm(8.5,10,t);
+T3('Índice nonclustered (nome)',-420,380,0,34,K.c,1);const u=sm(.5,3.5,t);tree(-420,300,0,.7,u);
+T3('Tabela (clustered)',520,380,0,34,K.o,1);for(let j=0;j<7;j++)B(520,260-j*85,0,300,65,40,K.b,.4,j==3?K.o:K.c);
+if(u>=1&&cv<1){T('Falta a coluna telefone…',W/2,980,42,K.o,sm(3.5,4.5,t)*(1-cv));if(k>0)arrow([-340,-40,40],[360,175,40],K.o,1-cv,6);T3('Key Lookup',60,150,40,40,K.o,k*(1-cv))}
+if(cv>0){for(let l=0;l<9;l++)T3('+tel',-420+(l-4)*63,-40,40,22,K.g,cv);T('Índice de cobertura: colunas incluídas evitam o lookup',W/2,980,38,K.g,cv);code(['CREATE NONCLUSTERED INDEX IX_Nome','ON Clientes (nome)','INCLUDE (telefone);'],960,70,900,sm(9,10,t))}}
+function s5(t){cam={y:0,p:.1,d:1500,x:0,yy:0};const bars=[['Leituras lógicas',[.9,.35]],['Tempo de CPU',[.7,.4]],['Tempo decorrido',[.8,.45]]],p=sm(.5,5,t),ss=sm(5.5,7,t);
+T('SIMULAÇÃO — valores ilustrativos',W/2-180,100,34,K.o,1);
+bars.forEach((b,i)=>{T(b[0],340,300+i*230,34,K.w,1);b[1].forEach((v,j)=>{B(-420+v*p*300/2-300,180-i*230*.9*1+ (j?-0:0)+60-j*0,0,v*p*600,50,60,j?K.g:K.o,.6,j?K.g:K.o)});T3('A',-760,180-i*207+10,0,24,K.o,1)});
+const o=sm(5,6,t);panel(960,160,880,640,K.c,o);g.fillStyle='#0b3a7a';g.globalAlpha=o;g.fillRect(960,160,880,56);g.globalAlpha=1;T('SQL Server Management Studio',1400,198,28,K.w,o);code(['SET STATISTICS IO ON;','SET STATISTICS TIME ON;'],1000,260,800,ss,[0,1]);T('Compare leituras e tempos antes e depois',1400,560,30,K.c,ss);T('Meça antes de otimizar',W/2,1020,40,K.o,sm(8,9.5,t))}
+function s6(t){cam={y:.25*Math.sin(t*.3),p:.2,d:1500,x:-250,yy:0};const rb=t>9,f=t<9?sm(1.5,5,t):1-sm(9.5,13,t),c1=lp(500,400,f),c2=lp(300,400,f),sh=t<9?1:0;
+code(['BEGIN TRANSACTION;','UPDATE Contas SET saldo = saldo - 100','WHERE id_conta = 1;','UPDATE Contas SET saldo = saldo + 100','WHERE id_conta = 2;',t<9?'COMMIT TRANSACTION;':'ROLLBACK TRANSACTION;'],60,110,860,1,[t<9?5:5]);
+const x1=250,x2=900;B(x1,0,0,380,260,200,K.b,.4,K.c);B(x2,0,0,380,260,200,K.b,.4,K.c);T3('Conta 1',x1,230,100,34,K.w,1);T3('Conta 2',x2,230,100,34,K.w,1);T3('R$ '+c1.toFixed(0),x1,0,110,60,K.w,1);T3('R$ '+c2.toFixed(0),x2,0,110,60,K.w,1);
+if(f>0&&f<1)D(lp(x1,x2,rb?f:f),120+60*Math.sin(f*3.14),110,22,K.o);
+const ring=sm(.5,1.5,t);g.globalAlpha=ring*.8;g.strokeStyle=t>8.5&&t<9.5?K.g:rb?K.r:K.c;g.lineWidth=4;g.setLineDash([16,10]);const a=P(x1-260,230,0),b=P(x2+260,-230,0);g.strokeRect(a[0],a[1],b[0]-a[0],b[1]-a[1]);g.setLineDash([]);g.globalAlpha=1;
+T(t<9?'COMMIT ✔ confirmado':'ROLLBACK ↩ valores restaurados',W/2,990,44,t<9?K.g:K.o,sm(7,8,t)*(t<9)+sm(14,15,t)*(t>=9));T('Exemplo ilustrativo: R$ 100 de uma conta para a outra',W/2,1045,26,K.c,.8);
+const ac=sm(15.5,16.5,t);if(ac>0){panel(100,100,1720,880,K.c,.95*ac);[['A','Atomicidade','Tudo ou nada'],['C','Consistência','Regras sempre respeitadas'],['I','Isolamento','Transações não se atrapalham'],['D','Durabilidade','Confirmado, permanece']].forEach((s,i)=>{const x=250+i*400,q=sm(16+i*.6,17+i*.6,t);T(s[0],x+100,500,160,K.o,q);T(s[1],x+100,600,36,K.c,q);T(s[2],x+100,660,24,K.w,q)});T('Propriedades ACID',W/2,230,56,K.w,ac)}}
+function sess(x,y,n,col,al=1){panel(x,y,300,130,col,al);T('Sessão '+n,x+150,y+78,40,col,al)}
+function lock(x,y,al=1){T('🔒',x,y,60,K.o,al)}
+function s7(t){cam={y:0,p:0,d:1500,x:0,yy:0};g.fillStyle='#020b1a';
+const dl=t>=11,tt=t-11;
+const rec=(x,y,n,col)=>{panel(x-130,y-60,260,120,col,1);T('Registro '+n,x,y+14,34,K.w,1)};
+if(!dl){const wait=sm(4,5,t);sess(140,420,'A',K.c);sess(1480,420,'B',K.r);rec(960,300,1,sm(1,2,t)>.5?K.o:K.c);rec(960,780,2,K.c);
+T('UPDATE + transação aberta',290,590,28,K.c,sm(.5,1.5,t));if(sm(1,2,t)>.5)lock(960,230);arrow([440,470],[830,320],K.c,sm(.5,1.5,t),6);
+if(wait>0){arrow([1480,470],[1100+(Math.sin(t*5)*8),320],K.r,wait,6);T('aguardando'+'.'.repeat(1+Math.floor(t*2)%3),1600,590,34,K.r,wait);T('BLOCKING',960,150,64,K.o,wait)}}
+else{sess(140,200,'A',K.c);sess(1480,200,'B',K.r);const v=tt>9?1:0,gone=sm(9,10,tt);
+rec(500,800,1,K.o);rec(1420,800,2,K.o);lock(500,730);lock(1420,730);
+arrow([290,330],[480,740],K.o,sm(.5,1.5,tt),5);arrow([1630,330],[1440,740],K.o,sm(.5,1.5,tt),5);
+const ci=sm(2.5,4,tt);if(!v){g.globalAlpha=ci;g.strokeStyle=K.r;g.lineWidth=8;g.beginPath();g.arc(960,800,190,Math.PI*1.15,Math.PI*1.95);g.stroke();g.beginPath();g.arc(960,800,190,Math.PI*.15,Math.PI*.95);g.stroke();g.globalAlpha=1;T('A quer o Registro 2',480,980,32,K.c,ci);T('B quer o Registro 1',1440,980,32,K.r,ci);T('DEADLOCK',960,130,72,K.r,ci);if(tt>6)T('Ciclo detectado pelo SQL Server',960,1040,36,K.o,sm(6,7,tt))}
+if(tt>=7&&tt<12){const k=sm(7.5,9,tt);T('Vítima escolhida: Sessão B → ROLLBACK',1480,420,34,K.r,k)}
+if(v){T('Sessão B revertida ✔',1630,480,34,K.r,1);arrow([640,800],[1280,800],K.g,sm(10,11.5,tt),8);T('Sessão A prossegue',960,980,44,K.g,sm(11,12,tt))}}}
+function s8(t){cam={y:lp(.5,0,sm(0,6,t)),p:.25,d:lp(900,2300,sm(0,7,t)),x:0,yy:0};
+G(0,-100,-300,14,10,150,100,(i,j)=>[K.b,.18,'#38e1ff33']);
+const a=sm(1,3,t);R(0,0,150,1500,900,K.c,.07*a,K.c);T3('VIEWS',-620,420,150,34,K.c,a);
+const b=sm(3,5,t);tree(0,330,0,1.3,b>0?1:0,K.o);T3('ÍNDICES',-700,250,0,34,K.o,b);
+const r=sm(5,7,t);for(let i=0;i<3;i++){const x=-500+i*500;B(x,-300,-80,300,120,60,K.g,.2*r,K.g);T3('TRANSAÇÕES',0,-420,-80,34,K.g,r)}
+T('SQL SERVER: VIEWS, ÍNDICES E TRANSAÇÕES',W/2,H/2+10,70,K.w,sm(8.5,10,t));g.globalAlpha=sm(8.5,10,t)*.5;g.fillStyle='#020b1a';g.fillRect(0,0,0,0);g.globalAlpha=1}
+const S=[[0,10,'Abertura',s0],[10,25,'Views',s1],[25,45,'Índices',s2],[45,60,'Seek × Scan',s3],[60,72,'Lookup',s4],[72,85,'Medição',s5],[85,105,'Transações',s6],[105,130,'Locks e deadlock',s7],[130,146,'Final',s8]];
+const NR=[[.5,'Todos os dias, sistemas processam milhares de informações. Mas você já imaginou o que acontece dentro de um banco de dados quando executamos uma simples consulta?'],[10.5,'Uma view é uma consulta armazenada que permite visualizar os dados de maneira organizada, simplificando consultas e oferecendo uma camada de abstração sobre as tabelas.'],[26,'Quando uma tabela cresce, encontrar uma informação pode exigir muitas leituras. Os índices ajudam o SQL Server a localizar os dados de maneira mais eficiente.'],[46,'O Seek realiza uma busca direcionada por chaves. O Scan percorre entradas do índice. Nenhuma dessas operações é automaticamente boa ou ruim: tudo depende dos dados e do objetivo da consulta.'],[61,'Quando um índice não contém todas as informações necessárias, o SQL Server pode precisar buscar dados adicionais. Em determinados cenários, um índice de cobertura reduz esse trabalho.'],[73,'Para saber se uma otimização realmente funciona, precisamos medir. O SQL Server fornece estatísticas de leitura e tempo que ajudam a comparar consultas.'],[86,'Uma transação agrupa operações que precisam ser tratadas como uma unidade lógica. O COMMIT confirma as alterações, enquanto o ROLLBACK pode reverter as alterações ainda não confirmadas.'],[106,'Os locks ajudam a controlar o acesso concorrente aos dados. Quando uma sessão precisa esperar por um recurso bloqueado, ocorre blocking.'],[116,'Quando duas sessões ficam esperando recursos mantidos uma pela outra, ocorre um deadlock. O SQL Server detecta o ciclo e escolhe uma transação como vítima para que a outra possa prosseguir.'],[130.5,'Views organizam o acesso aos dados. Índices podem melhorar a eficiência das consultas. E transações ajudam a manter a consistência das operações. Entender esses mecanismos é essencial para construir sistemas confiáveis e eficientes.']];
+const TOT=146;let now=0,play=false,last=0,sound=true,voice=true,ac=null,lastN=-1,sc=-1;
+function wrap(s,n){const o=[];let l='';s.split(' ').forEach(w=>{if((l+w).length>n){o.push(l);l=''}l+=w+' '});o.push(l);return o}
+function frame(T0){const sIdx=S.findIndex(s=>T0>=s[0]&&T0<s[1]);const s=S[sIdx<0?S.length-1:sIdx];
+const bg=g.createLinearGradient(0,0,0,H);bg.addColorStop(0,'#04122a');bg.addColorStop(1,'#010612');g.fillStyle=bg;g.fillRect(0,0,W,H);
+const lg=g.createRadialGradient(W/2,-100,50,W/2,200,1100);lg.addColorStop(0,'rgba(56,225,255,.18)');lg.addColorStop(1,'rgba(56,225,255,0)');g.fillStyle=lg;g.fillRect(0,0,W,H);
+for(let i=0;i<70;i++){const x=(i*397+T0*(8+i%5))%W,y=(i*211+T0*(5+i%7)*-1+H*5)%H;g.globalAlpha=.12+(i%4)*.06;g.fillStyle=i%9?K.c:K.o;g.fillRect(x,y,2+i%3,2+i%3)}g.globalAlpha=1;
+s[3](T0-s[0]);
+const vg=g.createRadialGradient(W/2,H/2,H*.5,W/2,H/2,H*1.1);vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,'rgba(0,0,0,.55)');g.fillStyle=vg;g.fillRect(0,0,W,H);
+T('CLAUDE MOTION · '+s[2].toUpperCase(),60,60,24,K.c,.8,'left');g.fillStyle=K.o;g.fillRect(60,76,70,3);
+const n=NR.filter(r=>T0>=r[0]&&T0<r[0]+r[1].length/13+1).pop();if(n){const ls=wrap(n[1],72),h=ls.length*46+24,y0=H-h-14;g.fillStyle='rgba(2,11,26,.7)';g.fillRect(260,y0,W-520,h);ls.forEach((l,i)=>T(l.trim(),W/2,y0+44+i*46,32,K.w,sm(n[0],n[0]+.4,T0),'center'))}}
+function tone(f,d,v=.05,ty='sine'){if(!ac||!sound)return;const o=ac.createOscillator(),gn=ac.createGain();o.type=ty;o.frequency.value=f;gn.gain.setValueAtTime(v,ac.currentTime);gn.gain.exponentialRampToValueAtTime(.0001,ac.currentTime+d);o.connect(gn);gn.connect(ac.destination);o.start();o.stop(ac.currentTime+d)}
+let drone=null;function startAudio(){if(!ac){ac=new(window.AudioContext||window.webkitAudioContext)();const o=ac.createOscillator(),o2=ac.createOscillator(),gn=ac.createGain(),fl=ac.createBiquadFilter();o.frequency.value=110;o2.frequency.value=165;o.type='sawtooth';o2.type='sine';fl.frequency.value=700;gn.gain.value=.07;o.connect(fl);o2.connect(fl);fl.connect(gn);gn.connect(ac.destination);o.start();o2.start();drone=gn}}
+let VZ=null,UT=null;function pick(){const v=speechSynthesis.getVoices();VZ=v.find(x=>/pt[-_]BR/i.test(x.lang))||v.find(x=>/^pt/i.test(x.lang))||null}
+if(window.speechSynthesis){pick();speechSynthesis.onvoiceschanged=pick}
+function say(i){if(!voice||!window.speechSynthesis)return;speechSynthesis.cancel();setTimeout(()=>{pick();UT=new SpeechSynthesisUtterance(NR[i][1]);UT.lang='pt-BR';if(VZ)UT.voice=VZ;UT.rate=1.05;UT.volume=1;speechSynthesis.resume();speechSynthesis.speak(UT)},150)}
+function sync(seek){const i=NR.map((r,k)=>[r,k]).filter(([r])=>now>=r[0]&&now<r[0]+r[1].length/13+1).map(x=>x[1]).pop();if(i!==undefined&&i!==lastN&&play){lastN=i;say(i)}else if(i===undefined){lastN=-1}
+const si=S.findIndex(s=>now>=s[0]&&now<s[1]);if(si!==sc){sc=si;tone(880,.4,.04);tone(440,.8,.05)}}
+function loop(ts){const dt=Math.min(.1,(ts-last)/1000);last=ts;if(play){now=Math.min(TOT,now+dt);if(now>=TOT){play=false;pp.textContent='↺'}sync()}
+frame(now);document.getElementById('sk').value=now;document.getElementById('tc').textContent=Math.floor(now/60)+':'+String(Math.floor(now%60)).padStart(2,'0');requestAnimationFrame(loop)}
+const pp=document.getElementById('pp');
+function go(t){now=t;lastN=-1;sc=-1;if(window.speechSynthesis)speechSynthesis.cancel()}
+function toggle(){startAudio();if(ac.state=='suspended')ac.resume();if(now>=TOT)go(0);play=!play;pp.textContent=play?'⏸':'▶';if(!play&&window.speechSynthesis)speechSynthesis.cancel();else lastN=-1}
+document.getElementById('ov').onclick=function(){this.style.display='none';toggle()};pp.onclick=toggle;
+document.getElementById('sk').oninput=e=>go(+e.target.value);
+document.getElementById('sd').onclick=e=>{sound=!sound;e.target.classList.toggle('on',sound);if(drone)drone.gain.value=sound?.07:0};
+document.getElementById('vz').onclick=e=>{voice=!voice;e.target.classList.toggle('on',voice);if(!voice&&window.speechSynthesis)speechSynthesis.cancel()};
+document.getElementById('fs').onclick=()=>document.querySelector('.st').requestFullscreen&&document.querySelector('.st').requestFullscreen();
+S.forEach(s=>{const b=document.createElement('button');b.textContent=s[2];b.onclick=()=>{go(s[0]);if(!play&&document.getElementById('ov').style.display!='none'){}};document.getElementById('ch').appendChild(b)});
+requestAnimationFrame(loop);
+</script></body></html>
